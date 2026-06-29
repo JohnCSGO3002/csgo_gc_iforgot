@@ -68,25 +68,16 @@ public:
         CMsgSOSingleObject &destroy,
         CMsgGCItemCustomizationNotification &notification);
 
-    bool CasketItemAdd(uint64_t casketId,
-        uint64_t itemId,
-        CMsgSOSingleObject &updateItem,
-        CMsgSOSingleObject &updateCasket,
-        CMsgGCItemCustomizationNotification &notification);
+    const CSOEconItem *GetItem(uint64_t itemId) const;
+    const ItemSchema &GetItemSchema() const { return m_itemSchema; }
 
-    bool CasketItemRemove(uint64_t casketId,
-        uint64_t itemId,
-        CMsgSOSingleObject &updateItem,
-        CMsgSOSingleObject &updateCasket,
-        CMsgGCItemCustomizationNotification &notification);
-
-    bool StatTrakSwap(uint64_t toolId,
-        uint64_t item1Id,
-        uint64_t item2Id,
-        CMsgSOSingleObject &destroy,
-        CMsgSOSingleObject &updateItem1,
-        CMsgSOSingleObject &updateItem2,
-        CMsgGCItemCustomizationNotification &notification);
+    // Trade-up contract: craft 10 items of same rarity into 1 item of next rarity
+    // Returns true on success, false on validation failure
+    bool TradeUp(const std::vector<uint64_t> &inputItemIds,
+        std::vector<CMsgSOSingleObject> &destroyItems,
+        CMsgSOSingleObject &newItem,
+        CMsgGCItemCustomizationNotification &notification,
+        CSOEconItem **outCraftedItem = nullptr);
 
     // returns the item id and adds the item to the provided CMsgSOMultipleObjects
     // on failure returns 0 and does nothing
@@ -142,8 +133,6 @@ private:
     {
         ToSingleObject(message, SOTypeDefaultEquippedDefinitionInstanceClient, object);
     }
-
-    bool UpdateCasket(CSOEconItem &item, int count);
 
     const uint64_t m_steamId;
     ItemSchema m_itemSchema;

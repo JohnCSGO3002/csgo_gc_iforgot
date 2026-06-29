@@ -1233,10 +1233,12 @@ public:
     {
         buffer.reserve(nFilters + 1);
         buffer.assign(pchFilters, pchFilters + nFilters);
+
         if (GetConfig().ShowCsgoGCServersOnly())
         {
             buffer.push_back({ "gametagsand", "csgo_gc" });
         }
+
         return buffer.data();
     }
 
@@ -1864,23 +1866,22 @@ static void Hk_SteamAPI_RunCallbacks()
 
     if (s_clientGC)
     {
-        // poll events
-        HostEvent type;
-        uint64_t id;
-        std::vector<uint8_t> buffer;
+        std::vector<EventData> events;
+        s_clientGC->m_gc.GetHostEvents(events);
 
+        // poll events
         bool runMicroTransactionResponse = false;
 
-        while (s_clientGC->m_gc.PollFromGC(type, id, buffer))
+        for (EventData &event : events)
         {
-            switch (type)
+            switch (static_cast<HostEvent>(event.type))
             {
             case HostEvent::Message:
-                s_clientGC->m_messageQueue.AddMessage((uint32_t)id, std::move(buffer));
+                s_clientGC->m_messageQueue.AddMessage(static_cast<uint32_t>(event.id), std::move(event.buffer));
                 break;
 
             case HostEvent::NetMessage:
-                s_clientGC->m_networking.SendMessage(buffer.data(), static_cast<uint32_t>(buffer.size()));
+                s_clientGC->m_networking.SendMessage(event.buffer.data(), static_cast<uint32_t>(event.buffer.size()));
                 break;
 
             case HostEvent::MicroTransactionResponse:
@@ -1931,21 +1932,27 @@ static void Hk_SteamGameServer_RunCallbacks()
 
     if (s_serverGC)
     {
-        // poll events
-        HostEvent type;
-        uint64_t id;
-        std::vector<uint8_t> buffer;
-
-        while (s_serverGC->m_gc.PollFromGC(type, id, buffer))
+        // only run server gc when logged on as an attempt to more accurately mimic real gc behaviour
+        // FIXME: does csgo handle CMsgConnectionStatus?
+        if (!SteamGameServer()->BLoggedOn())
         {
-            switch (type)
+            return;
+        }
+
+        std::vector<EventData> events;
+        s_serverGC->m_gc.GetHostEvents(events);
+
+        // poll events
+        for (EventData &event : events)
+        {
+            switch ((HostEvent)event.type)
             {
             case HostEvent::Message:
-                s_serverGC->m_messageQueue.AddMessage((uint32_t)id, std::move(buffer));
+                s_serverGC->m_messageQueue.AddMessage((uint32_t)event.id, std::move(event.buffer));
                 break;
 
             case HostEvent::NetMessage:
-                s_serverGC->m_networking.SendMessage(id, buffer.data(), static_cast<uint32_t>(buffer.size()));
+                s_serverGC->m_networking.SendMessage((uint32_t)event.id, event.buffer.data(), static_cast<uint32_t>(event.buffer.size()));
                 break;
 
             default:
@@ -1963,17 +1970,11 @@ static void Hk_SteamGameServer_RunCallbacks()
             s_callbackHooks.RunCallback(true, GCMessageAvailable_t::k_iCallback, &param);
         }
 
-        // don't run networking until we've received the hello and sent the welcome
-        // otherwise we might receive the local client's socache before that and it'll
-        // get wiped after the welcome is received
-        if (s_serverGC->m_gc.CanHandleNetMessages())
+        SteamNetworkingMessage_t *message;
+        while (s_serverGC->m_networking.ReceiveMessage(message))
         {
-            SteamNetworkingMessage_t *message;
-            while (s_serverGC->m_networking.ReceiveMessage(message))
-            {
-                s_serverGC->m_gc.PostToGC(GCEvent::NetMessage, message->m_identityPeer.GetSteamID64(), message->GetData(), message->GetSize());
-                message->Release();
-            }
+            s_serverGC->m_gc.PostToGC(GCEvent::NetMessage, message->m_identityPeer.GetSteamID64(), message->GetData(), message->GetSize());
+            message->Release();
         }
     }
 }

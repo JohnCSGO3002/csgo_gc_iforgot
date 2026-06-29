@@ -155,6 +155,12 @@ ItemSchema::ItemSchema()
         ParsePaintKitRarities(paintKitsRarityKey);
     }
 
+    const KeyValue *itemSetsKey = itemsGame->GetSubkey("item_sets");
+    if (itemSetsKey)
+    {
+        ParseItemSets(itemSetsKey);
+    }
+
     const KeyValue *musicDefinitionsKey = itemsGame->GetSubkey("music_definitions");
     if (musicDefinitionsKey)
     {
@@ -187,20 +193,6 @@ ItemSchema::ItemSchema()
     if (revolvingLootListsKey)
     {
         ParseRevolvingLootLists(revolvingLootListsKey);
-    }
-
-    // using for activating passes, where you got medal after activation
-    {
-        KeyValue passesKey{ "passes" };
-
-        if (passesKey.ParseFromFile("csgo_gc/passes.txt"))
-        {
-            ParsePasses(&passesKey);
-        }
-        else
-        {
-            assert(false);
-        }
     }
 }
 
@@ -408,18 +400,7 @@ const LootList *ItemSchema::GetCrateLootList(uint32_t crateDefIndex) const
         return nullptr;
     }
 
-    // self opening purchases fix
-    if (itemSearch->second.m_lootListName.size())
-    {
-        const auto lootListSearch = m_lootLists.find(itemSearch->second.m_lootListName);
-        if (lootListSearch == m_lootLists.end())
-        {
-            assert(false);
-            return nullptr;
-        }
-
-        return &lootListSearch->second;
-    }
+    assert(itemSearch->second.m_supplyCrateSeries);
 
     auto lootListSearch = m_revolvingLootLists.find(itemSearch->second.m_supplyCrateSeries);
     if (lootListSearch == m_revolvingLootLists.end())
@@ -449,10 +430,9 @@ bool ItemSchema::CreateItemFromLootListItem(Random &random,
     {
         item.set_quality(ItemSchema::QualityStrange);
     }
-    else if (lootListItem.quality != ItemSchema::QualityUnusual)
+    else
     {
-        // if not a unusual, make it unique
-        item.set_quality(ItemSchema::QualityUnique);
+        item.set_quality(lootListItem.quality);
     }
 
     // rarity override
@@ -508,9 +488,7 @@ bool ItemSchema::CreateItemFromLootListItem(Random &random,
         // mikkotodo how does the float distribution work?
         attribute = item.add_attribute();
         attribute->set_def_index(ItemSchema::AttributeTextureWear);
-
-        float itemFloat = GetConfig().RandomizeFloat() ? random.Float(paintKitInfo->m_minFloat, paintKitInfo->m_maxFloat) : 0;
-        SetAttributeFloat(attribute, itemFloat);
+        SetAttributeFloat(attribute, random.Float(paintKitInfo->m_minFloat, paintKitInfo->m_maxFloat));
     }
     else if (lootListItem.type == LootListItemNoAttribute)
     {
@@ -589,22 +567,6 @@ bool ItemSchema::CreateItem(uint32_t defIndex, ItemOrigin origin, Unacknowledged
     return true;
 }
 
-bool ItemSchema::PassItemsData(KeyValue &itemsData, uint32_t defIndex) const
-{
-    auto passKey = m_passes.find(defIndex);
-    if (passKey == m_passes.end())
-    {
-        return false;
-    }
-    const KeyValue *subkey = passKey->second.GetSubkey("items");
-    if (subkey)
-    {
-        itemsData = *subkey;
-        return true;
-    }
-    return false;
-}
-
 void ItemSchema::ParseItems(const KeyValue *itemsKey, const KeyValue *prefabsKey)
 {
     m_itemInfo.reserve(itemsKey->SubkeyCount());
@@ -626,6 +588,12 @@ void ItemSchema::ParseItems(const KeyValue *itemsKey, const KeyValue *prefabsKey
         auto &itemInfo = emplace.first->second;
         if (!itemInfo.m_isCoupon)
         {
+            // FIXME: self opening purchases
+            if (itemInfo.m_lootListName.size())
+            {
+                Platform::Print("Non coupon item associated loot list in %s!!!\n", itemInfo.m_name.c_str());
+            }
+
             //assert(!itemInfo.m_lootListName.size());
             assert(!itemInfo.m_willProduceStatTrak);
         }
@@ -706,7 +674,7 @@ void ItemSchema::ParseItemRecursive(ItemInfo &info, const KeyValue &itemKey, con
             else
             {
                 // not available to us mortals...
-                // Platform::Print("No such prefab '%s'\n", std::string{ prefabName }.c_str());
+                Platform::Print("No such prefab '%s'\n", std::string{ prefabName }.c_str());
             }
         }
     }
@@ -799,6 +767,36 @@ void ItemSchema::ParsePaintKits(const KeyValue *paintKitsKey)
         m_paintKitInfo.emplace(std::piecewise_construct,
             std::forward_as_tuple(name),
             std::forward_as_tuple(paintKitKey));
+    }
+}
+
+void ItemSchema::ParseItemSets(const KeyValue *itemSetsKey)
+{
+    m_itemSets.reserve(itemSetsKey->SubkeyCount());
+
+    for (const KeyValue &itemSetKey : *itemSetsKey)
+    {
+        ItemSet itemSet;
+        itemSet.name = std::string{ itemSetKey.GetString("name", itemSetKey.Name()) };
+        itemSet.isCollection = itemSetKey.GetNumber("is_collection", false);
+
+        const KeyValue *itemsKey = itemSetKey.GetSubkey("items");
+        if (itemsKey)
+        {
+            itemSet.items.reserve(itemsKey->SubkeyCount());
+            for (const KeyValue &itemKey : *itemsKey)
+            {
+                LootListItem item;
+                if (ParseLootListItem(item, itemKey.Name()))
+                {
+                    itemSet.items.push_back(item);
+                }
+            }
+        }
+
+        m_itemSets.emplace(std::piecewise_construct,
+            std::forward_as_tuple(itemSetKey.Name()),
+            std::forward_as_tuple(std::move(itemSet)));
     }
 }
 
@@ -1062,19 +1060,6 @@ void ItemSchema::ParseRevolvingLootLists(const KeyValue *revolvingLootListsKey)
     }
 }
 
-void ItemSchema::ParsePasses(const KeyValue *passesListKey)
-{
-    m_passes.reserve(passesListKey->SubkeyCount());
-
-    for (const KeyValue &passKey : *passesListKey)
-    {
-        uint32_t index = FromString<uint32_t>(passKey.Name());
-        assert(index);
-
-        m_passes.try_emplace(index, passKey);
-    }
-}
-
 ItemInfo *ItemSchema::ItemInfoByName(std::string_view name)
 {
     for (auto &pair : m_itemInfo)
@@ -1088,6 +1073,17 @@ ItemInfo *ItemSchema::ItemInfoByName(std::string_view name)
 
     assert(false);
     return nullptr;
+}
+
+const ItemInfo *ItemSchema::ItemInfoByDefIndex(uint32_t defIndex) const
+{
+    auto it = m_itemInfo.find(defIndex);
+    if (it == m_itemInfo.end())
+    {
+        return nullptr;
+    }
+
+    return &it->second;
 }
 
 StickerKitInfo *ItemSchema::StickerKitInfoByName(std::string_view name)
@@ -1114,6 +1110,19 @@ PaintKitInfo *ItemSchema::PaintKitInfoByName(std::string_view name)
     return &it->second;
 }
 
+const PaintKitInfo *ItemSchema::PaintKitInfoByDefIndex(uint32_t defIndex) const
+{
+    for (const auto &pair : m_paintKitInfo)
+    {
+        if (pair.second.m_defIndex == defIndex)
+        {
+            return &pair.second;
+        }
+    }
+
+    return nullptr;
+}
+
 MusicDefinitionInfo *ItemSchema::MusicDefinitionInfoByName(std::string_view name)
 {
     auto it = m_musicDefinitionInfo.find(std::string{ name });
@@ -1124,4 +1133,128 @@ MusicDefinitionInfo *ItemSchema::MusicDefinitionInfoByName(std::string_view name
     }
 
     return &it->second;
+}
+
+bool ItemSchema::GetCollectionsForPaintedItem(uint32_t defIndex, uint32_t paintKitDefIndex,
+    std::vector<std::string> &outCollections) const
+{
+    outCollections.clear();
+
+    for (const auto &pair : m_itemSets)
+    {
+        const ItemSet &itemSet = pair.second;
+        if (!itemSet.isCollection)
+        {
+            continue;
+        }
+
+        for (const LootListItem &item : itemSet.items)
+        {
+            if (!item.itemInfo || !item.paintKitInfo)
+            {
+                continue;
+            }
+
+            if (item.itemInfo->m_defIndex == defIndex && item.paintKitInfo->m_defIndex == paintKitDefIndex)
+            {
+                outCollections.push_back(pair.first);
+                break;
+            }
+        }
+    }
+
+    return !outCollections.empty();
+}
+
+bool ItemSchema::GetCollectionsForPaintKit(uint32_t paintKitDefIndex,
+    std::vector<std::string> &outCollections) const
+{
+    outCollections.clear();
+
+    for (const auto &pair : m_itemSets)
+    {
+        const ItemSet &itemSet = pair.second;
+        if (!itemSet.isCollection)
+        {
+            continue;
+        }
+
+        for (const LootListItem &item : itemSet.items)
+        {
+            if (!item.paintKitInfo)
+            {
+                continue;
+            }
+
+            if (item.paintKitInfo->m_defIndex == paintKitDefIndex)
+            {
+                outCollections.push_back(pair.first);
+                break;
+            }
+        }
+    }
+
+    return !outCollections.empty();
+}
+
+std::string ItemSchema::GetCollectionDisplayName(std::string_view collectionName) const
+{
+    auto it = m_itemSets.find(std::string{ collectionName });
+    if (it == m_itemSets.end())
+    {
+        return std::string{ collectionName };
+    }
+
+    if (it->second.name.empty())
+    {
+        return std::string{ collectionName };
+    }
+
+    return it->second.name;
+}
+
+bool ItemSchema::GetTradeUpCandidates(std::string_view collectionName, uint32_t outputRarity,
+    std::vector<const LootListItem *> &outCandidates) const
+{
+    outCandidates.clear();
+
+    auto it = m_itemSets.find(std::string{ collectionName });
+    if (it == m_itemSets.end())
+    {
+        return false;
+    }
+
+    const ItemSet &itemSet = it->second;
+    for (const LootListItem &item : itemSet.items)
+    {
+        if (item.type != LootListItemPaintable)
+        {
+            continue;
+        }
+
+        if (!item.itemInfo || !item.paintKitInfo)
+        {
+            continue;
+        }
+
+        if (item.rarity == outputRarity)
+        {
+            outCandidates.push_back(&item);
+        }
+    }
+
+    return !outCandidates.empty();
+}
+
+uint32_t ItemSchema::GetPaintedRarity(uint32_t defIndex, uint32_t paintKitDefIndex, uint32_t fallbackRarity) const
+{
+    const ItemInfo *itemInfo = ItemInfoByDefIndex(defIndex);
+    const PaintKitInfo *paintKitInfo = PaintKitInfoByDefIndex(paintKitDefIndex);
+
+    if (!itemInfo || !paintKitInfo)
+    {
+        return fallbackRarity;
+    }
+
+    return PaintedItemRarity(itemInfo->m_rarity, paintKitInfo->m_rarity);
 }

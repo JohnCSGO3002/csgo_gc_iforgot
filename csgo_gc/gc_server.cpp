@@ -59,7 +59,7 @@ void ServerGC::HandleMessage(uint32_t type, const void *data, uint32_t size)
         switch (messageRead.TypeUnmasked())
         {
         case k_EMsgGCServerHello:
-            OnServerHello(messageRead);
+            SendServerWelcome();
             break;
 
         case k_EMsgGCCStrike15_v2_Server2GCClientValidate:
@@ -91,7 +91,7 @@ void ServerGC::HandleClientSOCacheUnsubscribe(uint64_t steamId)
 }
 
 template<typename T>
-static bool ValidateMessageOwnerSOID(GCMessageRead &messageRead, uint64_t steamId)
+static bool ValidateMessageOwnerSOID(GCMessageRead &messageRead, uint64_t steamId, std::optional<GCMessageWrite> &)
 {
     T message;
     if (!messageRead.ReadProtobuf(message))
@@ -111,9 +111,80 @@ static bool ValidateMessageOwnerSOID(GCMessageRead &messageRead, uint64_t steamI
     return true;
 }
 
+// FIXME: made up
+constexpr int MaxServerSOCacheItems = 64;
+
+static bool RemoveUnequippedItems(CMsgSOCacheSubscribed &message, int &itemCount)
+{
+    bool modified = false;
+
+    for (auto it = message.mutable_objects()->begin(); it != message.mutable_objects()->end(); it++)
+    {
+        if (it->type_id() != SOTypeItem)
+        {
+            continue;
+        }
+
+        for (auto obj = it->mutable_object_data()->begin(); obj != it->mutable_object_data()->end(); )
+        {
+            CSOEconItem item;
+            if (!item.ParseFromString(*obj) || !item.equipped_state_size())
+            {
+                obj = it->mutable_object_data()->erase(obj);
+                modified = true;
+            }
+            else
+            {
+                obj++;
+                itemCount++;
+            }
+        }
+    }
+
+    return modified;
+}
+
+template<>
+bool ValidateMessageOwnerSOID<CMsgSOCacheSubscribed>(GCMessageRead &messageRead, uint64_t steamId, std::optional<GCMessageWrite> &sanitized)
+{
+    CMsgSOCacheSubscribed message;
+    if (!messageRead.ReadProtobuf(message))
+    {
+        Platform::Print("ValidateMessageOwnerSOID %llu: parsing failed\n", steamId);
+        return false;
+    }
+
+    if (message.owner_soid().type() != SoIdTypeSteamId
+        || message.owner_soid().id() != steamId)
+    {
+        Platform::Print("ValidateMessageOwnerSOID %llu: steam id mismatch (message has %llu)\n",
+            steamId, message.owner_soid().id());
+        return false;
+    }
+
+    size_t oldSize = message.ByteSizeLong();
+
+    int itemCount = 0;
+    bool modified = RemoveUnequippedItems(message, itemCount);
+
+    if (itemCount > MaxServerSOCacheItems)
+    {
+        Platform::Print("Client %llu socache has %d items (max allowed %d), ignoring\n", itemCount, MaxServerSOCacheItems);
+        return false;
+    }
+
+    if (modified)
+    {
+        Platform::Print("SOCache from %llu had to be cleaned up (%zu -> %zu bytes)\n", steamId, oldSize, message.ByteSizeLong());
+        sanitized.emplace(k_ESOMsg_CacheSubscribed, message);
+    }
+
+    return true;
+}
+
 void ServerGC::HandleNetMessage(uint64_t steamId, const void *data, uint32_t size)
 {
-    assert(CanHandleNetMessages());
+    Platform::Print("HandleNetMessage: %llu, %u bytes\n", steamId, size);
 
     GCMessageRead validate{ 0, data, size };
     if (!validate.IsValid())
@@ -132,21 +203,22 @@ void ServerGC::HandleNetMessage(uint64_t steamId, const void *data, uint32_t siz
 
     // validate the type and contents
     bool isValid = false;
+    std::optional<GCMessageWrite> sanitized;
 
     switch (validate.TypeUnmasked())
     {
     case k_ESOMsg_Create:
     case k_ESOMsg_Update:
     case k_ESOMsg_Destroy:
-        isValid = ValidateMessageOwnerSOID<CMsgSOSingleObject>(validate, steamId);
+        isValid = ValidateMessageOwnerSOID<CMsgSOSingleObject>(validate, steamId, sanitized);
         break;
 
     case k_ESOMsg_CacheSubscribed:
-        isValid = ValidateMessageOwnerSOID<CMsgSOCacheSubscribed>(validate, steamId);
+        isValid = ValidateMessageOwnerSOID<CMsgSOCacheSubscribed>(validate, steamId, sanitized);
         break;
 
     case k_ESOMsg_UpdateMultiple:
-        isValid = ValidateMessageOwnerSOID<CMsgSOMultipleObjects>(validate, steamId);
+        isValid = ValidateMessageOwnerSOID<CMsgSOMultipleObjects>(validate, steamId, sanitized);
         break;
 
     case k_EMsgGCItemAcknowledged:
@@ -161,18 +233,27 @@ void ServerGC::HandleNetMessage(uint64_t steamId, const void *data, uint32_t siz
         return;
     }
 
-    PostToHost(HostEvent::Message, validate.TypeMasked(), data, size);
-}
-
-void ServerGC::OnServerHello(GCMessageRead &messageRead)
-{
-    CMsgServerHello hello;
-    if (!messageRead.ReadProtobuf(hello))
+    if (!m_sentWelcome)
     {
-        Platform::Print("Parsing CMsgServerHello failed, ignoring\n");
-        return;
+        // FIXME: ideally we'd sent this on steam logon, instead of on demand...
+        Platform::Print("Sending server welcome due to net message\n");
+        SendServerWelcome();
     }
 
+    if (sanitized.has_value())
+    {
+        // pass the sanitized message
+        PostToHost(HostEvent::Message, sanitized->TypeMasked(), sanitized->Data(), sanitized->Size());
+    }
+    else
+    {
+        // otherwise the old message was fine
+        PostToHost(HostEvent::Message, validate.TypeMasked(), data, size);
+    }
+}
+
+void ServerGC::SendServerWelcome()
+{
     // we don't care about anything in this message, just reply
 
     CMsgCStrike15Welcome csWelcome;
@@ -186,7 +267,7 @@ void ServerGC::OnServerHello(GCMessageRead &messageRead)
     GCMessageWrite write{ k_EMsgGCServerWelcome, welcome };
     PostToHost(HostEvent::Message, write.TypeMasked(), write.Data(), write.Size());
 
-    m_receivedHello.store(true, std::memory_order_release);
+    m_sentWelcome = true;
 }
 
 void ServerGC::IncrementKillCountAttribute(GCMessageRead &messageRead)

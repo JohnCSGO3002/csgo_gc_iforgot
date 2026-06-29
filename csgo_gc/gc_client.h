@@ -33,16 +33,10 @@ private:
     void StoreGetUserData(GCMessageRead &messageRead);
     void StorePurchaseInit(GCMessageRead &messageRead);
     void StorePurchaseFinalize(GCMessageRead &messageRead);
-    void PartySearch(GCMessageRead &messageRead);
-    void RequestCoPlays(GCMessageRead &messageRead);
-    void ClientRequestPlayersProfile(GCMessageRead &messageRead);
-    void CasketItemLoadContents(GCMessageRead &messageRead);
-    void CasketItemAdd(GCMessageRead &messageRead);
-    void CasketItemExtract(GCMessageRead &messageRead);
-    void StatTrakSwap(GCMessageRead &messageRead);
 
     void DeleteItem(GCMessageRead &messageRead);
     void UnlockCrate(GCMessageRead &messageRead);
+    void Craft(GCMessageRead &messageRead);
     void NameItem(GCMessageRead &messageRead);
     void NameBaseItem(GCMessageRead &messageRead);
     void RemoveItemName(GCMessageRead &messageRead);

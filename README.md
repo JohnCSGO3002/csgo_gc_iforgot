@@ -1,6 +1,6 @@
 # csgo_gc
 
-> [!WARNING]
+> [!CAUTION]
 > This project is incomplete and not ready for general use.
 
 ## What is this?
@@ -15,25 +15,20 @@ While it's still possible to connect CS:GO to CS2's GC by spoofing the version n
 - Opening cases (including sticker capsules, patch packs, graffiti boxes and music kit boxes)
 - Graffiti support
 - Weapon StatTrak support
+- Trade ups
 - Stickers and patches
 - Name tags
-- StatTrak swaps
-- Storage Units
-- Majors & operations passes (passes.txt)
-- Recent teammates (configurable on config.txt, friends block)
-- Party search (configurable on config.txt, friends block)
+- Music kits
 - In-game store
 - Works without full Steam API emulation
 - Full Windows, Linux and macOS support
 - Functional lobbies
 - Dedicated server support
-- Functional server browser (only shows csgo_gc servers)
+- Functional server browser (only shows csgo_gc servers by default)
 - Networking using Steam's P2P interface
 
 ## Planned features
-- Rest of the core features (trade ups, souvenirs...)
-- Graphical inventory editor
-- A tool to copy your CS2 inventory over
+- Rest of the core features (souvenirs, storage units, StatTrak swaps...)
 
 I'm still looking for the **full** CS:GO Item Schema. If you have a relatively recent copy of it and are willing to share it, let me know!
 
@@ -50,7 +45,10 @@ I'm still looking for the **full** CS:GO Item Schema. If you have a relatively r
 - macOS users: The release binaries are not notarized, so if you're using them, you'll have to deal with that somehow
 
 ## Inventory editing
-Since there is no graphical editor yet, you'll have to edit `csgo_gc/inventory.txt` manually. There is a guide made by someone else [here](https://gist.github.com/dricotec/1ae3deb06c42012970c00df914348e76).
+For GUI inventory editors, see https://github.com/mikkokko/csgo_gc/issues/82. For manual editing, there is a guide made by someone else [here](https://gist.github.com/dricotec/1ae3deb06c42012970c00df914348e76).
+
+## Configuration
+See [csgo_gc/config.txt](examples/config.txt) for available options.
 
 ## Building
 Requirements:

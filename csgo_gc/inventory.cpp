@@ -87,6 +87,17 @@ uint32_t Inventory::AccountId() const
     return m_steamId & 0xffffffff;
 }
 
+const CSOEconItem *Inventory::GetItem(uint64_t itemId) const
+{
+    auto it = m_items.find(itemId);
+    if (it == m_items.end())
+    {
+        return nullptr;
+    }
+
+    return &it->second;
+}
+
 CSOEconItem &Inventory::AllocateItem(uint32_t highItemId)
 {
     // Players fuck up their inventory files constantly and end up with item id collisions...
@@ -321,6 +332,11 @@ void Inventory::BuildCacheSubscription(CMsgSOCacheSubscribed &message, int level
 
         for (const auto &pair : m_items)
         {
+            if (server && !pair.second.equipped_state_size())
+            {
+                continue;
+            }
+
             object->add_object_data(pair.second.SerializeAsString());
         }
     }
@@ -455,51 +471,32 @@ bool Inventory::UseItem(uint64_t itemId,
         return false;
     }
 
-    if (it->second.def_index() == ItemSchema::ItemSpray)
+    if (it->second.def_index() != ItemSchema::ItemSpray)
     {
-        // create an unsealed spray based on the sealed one
-        CSOEconItem &unsealed = CreateItem(it->second);
-        unsealed.set_def_index(ItemSchema::ItemSprayPaint);
-
-        // remove the sealed spray from our inventory
-        DestroyItem(it, destroy);
-
-        // equip the new spray, this will also unequip the old one if we had one
-        EquipItem(unsealed.id(), 0, ItemSchema::LoadoutSlotGraffiti, updateMultiple);
-
-        // remove this to have unlimited sprays
-        CSOEconItemAttribute *attribute = unsealed.add_attribute();
-        attribute->set_def_index(ItemSchema::AttributeSpraysRemaining);
-        m_itemSchema.SetAttributeUint32(attribute, 50);
-
-        // set notification
-        notification.add_item_id(unsealed.id());
-        notification.set_request(k_EGCItemCustomizationNotification_GraffitiUnseal);
-        return true;
-    }
-    // uses for passes
-    else if (KeyValue itemsData("items"); m_itemSchema.PassItemsData(itemsData, it->second.def_index()))
-    {
-        for (const KeyValue &itemKey : itemsData)
-        {
-            uint32_t defIdx = FromString<uint32_t>(itemKey.Name());
-
-            CSOEconItem item = CreateItem(defIdx, ItemOriginBaseItem, UnacknowledgedEarned);
-            AddToMultipleObjects(updateMultiple, item);
-
-            notification.add_item_id(item.id());
-            notification.set_request(k_EGCItemCustomizationNotification_ActivateFanToken);
-        }
-
-        if (GetConfig().DestroyUsedItems())
-        {
-            DestroyItem(it, destroy);
-        }
-        return true;
+        assert(false);
+        return false;
     }
 
-    Platform::Print("Inventory::UseItem: unknown item for use %u\n", it->second.def_index());
-    return false;
+    // create an unsealed spray based on the sealed one
+    CSOEconItem &unsealed = CreateItem(it->second);
+    unsealed.set_def_index(ItemSchema::ItemSprayPaint);
+
+    // remove the sealed spray from our inventory
+    DestroyItem(it, destroy);
+
+    // equip the new spray, this will also unequip the old one if we had one
+    EquipItem(unsealed.id(), 0, ItemSchema::LoadoutSlotGraffiti, updateMultiple);
+
+    // remove this to have unlimited sprays
+    CSOEconItemAttribute *attribute = unsealed.add_attribute();
+    attribute->set_def_index(ItemSchema::AttributeSpraysRemaining);
+    m_itemSchema.SetAttributeUint32(attribute, 50);
+
+    // set notification
+    notification.add_item_id(unsealed.id());
+    notification.set_request(k_EGCItemCustomizationNotification_GraffitiUnseal);
+
+    return true;
 }
 
 bool Inventory::UnlockCrate(uint64_t crateId,
@@ -580,6 +577,49 @@ static int ItemWearLevel(float wearFloat)
     // battle scarred
     return 4;
 }
+
+static bool GetItemPaintKitDefIndex(const CSOEconItem &item, const ItemSchema &schema, uint32_t &paintKitDefIndex)
+{
+    for (const CSOEconItemAttribute &attr : item.attribute())
+    {
+        if (attr.def_index() == ItemSchema::AttributeTexturePrefab)
+        {
+            paintKitDefIndex = schema.AttributeUint32(&attr);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static std::string GetItemCollectionId(const CSOEconItem &item, const ItemSchema &schema)
+{
+    uint32_t paintKitDefIndex = 0;
+    if (!GetItemPaintKitDefIndex(item, schema, paintKitDefIndex))
+    {
+        return {};
+    }
+
+    std::vector<std::string> collections;
+    if (!schema.GetCollectionsForPaintedItem(item.def_index(), paintKitDefIndex, collections))
+    {
+        return {};
+    }
+
+    std::sort(collections.begin(), collections.end());
+    return collections.front();
+}
+
+static std::string GetCollectionName(const ItemSchema &schema, std::string_view collectionId)
+{
+    if (collectionId.empty())
+    {
+        return "Unknown";
+    }
+
+    return schema.GetCollectionDisplayName(collectionId);
+}
+
 
 void Inventory::ItemToPreviewDataBlock(const CSOEconItem &item, CEconItemPreviewDataBlock &block)
 {
@@ -1016,33 +1056,9 @@ bool Inventory::NameItem(uint64_t nameTagId,
 
     it->second.mutable_custom_name()->assign(name);
 
-    uint32_t defIdx = it->second.def_index();
-
-    if (defIdx == ItemSchema::ItemCasket)
-    {
-        for (const CSOEconItemAttribute &attribute : it->second.attribute())
-        {
-            if (attribute.def_index() == ItemSchema::AttributeCasketItemsCount)
-            {
-                ToSingleObject(update, it->second);
-                notification.add_item_id(it->second.id());
-                notification.set_request(k_EGCItemCustomizationNotification_NameItem);
-                return true;
-            }
-        }
-
-        CSOEconItemAttribute *attribute = it->second.add_attribute();
-        attribute->set_def_index(ItemSchema::AttributeCasketItemsCount);
-        m_itemSchema.SetAttributeUint32(attribute, 0);
-
-        attribute = it->second.add_attribute();
-        attribute->set_def_index(ItemSchema::AttributeCasketModificationDate);
-        m_itemSchema.SetAttributeUint32(attribute, time(nullptr));
-    }
-
     ToSingleObject(update, it->second);
 
-    if (GetConfig().DestroyUsedItems() && defIdx != ItemSchema::ItemCasket)
+    if (GetConfig().DestroyUsedItems())
     {
         auto tag = m_items.find(nameTagId);
         if (tag == m_items.end())
@@ -1119,223 +1135,6 @@ bool Inventory::RemoveItemName(uint64_t itemId,
 
         ToSingleObject(update, it->second);
     }
-
-    return true;
-}
-
-static void RemoveItemAttr(CSOEconItem &item, uint32_t attrIdx)
-{
-    for (auto attrib = item.mutable_attribute()->begin(); attrib != item.mutable_attribute()->end();)
-    {
-        if (attrib->def_index() == attrIdx)
-        {
-            attrib = item.mutable_attribute()->erase(attrib);
-        }
-        else
-        {
-            attrib++;
-        }
-    }
-}
-
-bool Inventory::UpdateCasket(CSOEconItem& item, int count)
-{
-    for (int i = 0; i < item.attribute_size(); i++)
-    {
-        CSOEconItemAttribute *attribute = item.mutable_attribute(i);
-        if (attribute->def_index() == ItemSchema::AttributeCasketItemsCount)
-        {
-            int value = m_itemSchema.AttributeUint32(attribute) + count;
-
-            if (value > 1000 || value < 0)
-            {
-                // casket full or empty
-                return false;
-            }
-
-            m_itemSchema.SetAttributeUint32(attribute, value);
-        }
-        else if (attribute->def_index() == ItemSchema::AttributeCasketModificationDate)
-        {
-            m_itemSchema.SetAttributeUint32(attribute, time(nullptr));
-        }
-    }
-
-    return true;
-}
-
-bool Inventory::CasketItemAdd(uint64_t casketId, 
-    uint64_t itemId, 
-    CMsgSOSingleObject &updateItem,
-    CMsgSOSingleObject &updateCasket,
-    CMsgGCItemCustomizationNotification &notification)
-{
-    auto casket = m_items.find(casketId);
-    if (casket == m_items.end())
-    {
-        assert(false);
-        return false;
-    }
-
-    auto item = m_items.find(itemId);
-    if (item == m_items.end())
-    {
-        assert(false);
-        return false;
-    }
-
-    uint32_t defIdx = casket->second.def_index();
-
-    if (defIdx != ItemSchema::ItemCasket)
-    {
-        assert(false);
-        return false;
-    }
-
-    if (!UpdateCasket(casket->second, 1))
-    {
-        notification.set_request(k_EGCItemCustomizationNotification_CasketTooFull);
-        notification.add_item_id(casketId);
-        return true;
-    }
-
-    uint32_t low = static_cast<uint32_t>(casketId);
-    uint32_t high = static_cast<uint32_t>(casketId >> 32);
-
-    // add low and high of casket to item
-    CSOEconItemAttribute *attribute = item->second.add_attribute();
-    attribute->set_def_index(ItemSchema::AttributeCasketIdLow);
-    m_itemSchema.SetAttributeUint32(attribute, low);
-
-    attribute = item->second.add_attribute();
-    attribute->set_def_index(ItemSchema::AttributeCasketIdHigh);
-    m_itemSchema.SetAttributeUint32(attribute, high);
-
-    item->second.clear_equipped_state();
-
-    ToSingleObject(updateItem, item->second);
-    ToSingleObject(updateCasket, casket->second);
-
-    notification.set_request(k_EGCItemCustomizationNotification_CasketAdded);
-    notification.add_item_id(casketId);
-
-    return true;
-}
-
-bool Inventory::CasketItemRemove(uint64_t casketId, 
-    uint64_t itemId, 
-    CMsgSOSingleObject &updateItem,
-    CMsgSOSingleObject &updateCasket,
-    CMsgGCItemCustomizationNotification &notification)
-{
-    auto casket = m_items.find(casketId);
-    if (casket == m_items.end())
-    {
-        assert(false);
-        return false;
-    }
-
-    auto item = m_items.find(itemId);
-    if (item == m_items.end())
-    {
-        assert(false);
-        return false;
-    }
-
-    uint32_t defIdx = casket->second.def_index();
-
-    if (defIdx != ItemSchema::ItemCasket)
-    {
-        assert(false);
-        return false;
-    }
-
-    if (!UpdateCasket(casket->second, -1))
-    {
-        notification.set_request(k_EGCItemCustomizationNotification_CasketTooFull);
-        notification.add_item_id(casketId);
-        return true;
-    }
-
-    RemoveItemAttr(item->second, ItemSchema::AttributeCasketIdLow);
-    RemoveItemAttr(item->second, ItemSchema::AttributeCasketIdHigh);
-
-    ToSingleObject(updateItem, item->second);
-    ToSingleObject(updateCasket, casket->second);
-
-    notification.set_request(k_EGCItemCustomizationNotification_CasketRemoved);
-    notification.add_item_id(casketId);
-
-    return true;
-}
-
-bool Inventory::StatTrakSwap(uint64_t toolId,
-    uint64_t item1Id,
-    uint64_t item2Id,
-    CMsgSOSingleObject &destroy,
-    CMsgSOSingleObject &updateItem1,
-    CMsgSOSingleObject &updateItem2,
-    CMsgGCItemCustomizationNotification &notification)
-{
-    auto item1 = m_items.find(item1Id);
-    if (item1 == m_items.end())
-    {
-        assert(false);
-        return false;
-    }
-
-    auto item2 = m_items.find(item2Id);
-    if (item2 == m_items.end())
-    {
-        assert(false);
-        return false;
-    }
-
-    CSOEconItemAttribute *item1Attr = nullptr;
-    CSOEconItemAttribute *item2Attr = nullptr;
-
-    // shit code, need to implement to other method
-    for (int i = 0; i < item1->second.attribute_size(); i++)
-    {
-        CSOEconItemAttribute *attribute = item1->second.mutable_attribute(i);
-        if (attribute->def_index() == ItemSchema::AttributeKillEater)
-        {
-            item1Attr = attribute;
-        }
-    }
-    for (int i = 0; i < item2->second.attribute_size(); i++)
-    {
-        CSOEconItemAttribute *attribute = item2->second.mutable_attribute(i);
-        if (attribute->def_index() == ItemSchema::AttributeKillEater)
-        {
-            item2Attr = attribute;
-        }
-    }
-
-    // temp variable
-    uint32_t item1Val = m_itemSchema.AttributeUint32(item1Attr);
-
-    m_itemSchema.SetAttributeUint32(item1Attr, m_itemSchema.AttributeUint32(item2Attr));
-    m_itemSchema.SetAttributeUint32(item2Attr, item1Val);
-
-    if (GetConfig().DestroyUsedItems())
-    {
-        auto tool = m_items.find(toolId);
-        if (tool == m_items.end())
-        {
-            assert(false);
-            return false;
-        }
-
-        DestroyItem(tool, destroy);
-    }
-
-    ToSingleObject(updateItem1, item1->second);
-    ToSingleObject(updateItem2, item2->second);
-
-    notification.add_item_id(item1Id);
-    notification.add_item_id(item2Id);
-    notification.set_request(k_EGCItemCustomizationNotification_StatTrakSwap);
 
     return true;
 }
@@ -1437,4 +1236,266 @@ void Inventory::DestroyItem(ItemMap::iterator iterator, CMsgSOSingleObject &mess
     ToSingleObject(message, item);
 
     m_items.erase(iterator);
+}
+
+bool Inventory::TradeUp(const std::vector<uint64_t> &inputItemIds,
+    std::vector<CMsgSOSingleObject> &destroyItems,
+    CMsgSOSingleObject &newItem,
+    CMsgGCItemCustomizationNotification &notification,
+    CSOEconItem **outCraftedItem)
+{
+    if (inputItemIds.size() != 10)
+    {
+        Platform::Print("Trade-up requires exactly 10 items, got %zu\n", inputItemIds.size());
+        return false;
+    }
+
+    std::vector<ItemMap::iterator> inputItems;
+    inputItems.reserve(10);
+
+    uint32_t inputRarity = 0;
+    bool statTrakSet = false;
+    bool hasStatTrak = false;
+    float totalWear = 0.0f;
+    int wearCount = 0;
+
+    std::map<std::string, int> collectionCounts;
+
+    for (uint64_t itemId : inputItemIds)
+    {
+        auto it = m_items.find(itemId);
+        if (it == m_items.end())
+        {
+            Platform::Print("Trade-up item %llu not found\n", itemId);
+            return false;
+        }
+
+        const CSOEconItem &item = it->second;
+        inputItems.push_back(it);
+
+        uint32_t paintKitDefIndex = 0;
+        if (!GetItemPaintKitDefIndex(item, m_itemSchema, paintKitDefIndex))
+        {
+            Platform::Print("Trade-up item %llu has no paint kit\n", itemId);
+            return false;
+        }
+
+        uint32_t rarity = m_itemSchema.GetPaintedRarity(item.def_index(), paintKitDefIndex, item.rarity());
+        if (rarity < ItemSchema::RarityCommon || rarity > ItemSchema::RarityLegendary)
+        {
+            Platform::Print("Trade-up item %llu has invalid rarity %u\n", itemId, rarity);
+            return false;
+        }
+
+        if (inputRarity == 0)
+        {
+            inputRarity = rarity;
+        }
+        else if (rarity != inputRarity)
+        {
+            Platform::Print("Trade-up items must all be same rarity (expected %u, got %u)\n", inputRarity, rarity);
+            return false;
+        }
+
+        std::vector<std::string> collections;
+        if (!m_itemSchema.GetCollectionsForPaintedItem(item.def_index(), paintKitDefIndex, collections))
+        {
+            if (!m_itemSchema.GetCollectionsForPaintKit(paintKitDefIndex, collections))
+            {
+                Platform::Print("Trade-up item %llu has no collection mapping (def %u, paint %u)\n",
+                    itemId, item.def_index(), paintKitDefIndex);
+                return false;
+            }
+        }
+
+        std::sort(collections.begin(), collections.end());
+        const std::string &collectionId = collections.front();
+        collectionCounts[collectionId]++;
+
+        Platform::Print("Trade-up item %llu: collection %s (%s), quality %u\n", itemId,
+            collectionId.c_str(), GetCollectionName(m_itemSchema, collectionId).c_str(), item.quality());
+
+        bool itemStatTrak = false;
+        for (const CSOEconItemAttribute &attr : item.attribute())
+        {
+            if (attr.def_index() == ItemSchema::AttributeKillEater)
+            {
+                itemStatTrak = true;
+            }
+            else if (attr.def_index() == ItemSchema::AttributeTextureWear)
+            {
+                totalWear += m_itemSchema.AttributeFloat(&attr);
+                wearCount++;
+            }
+        }
+
+        if (!statTrakSet)
+        {
+            hasStatTrak = itemStatTrak;
+            statTrakSet = true;
+        }
+        else if (itemStatTrak != hasStatTrak)
+        {
+            Platform::Print("Trade-up items must all be StatTrak or all non-StatTrak\n");
+            return false;
+        }
+    }
+
+    float avgWear = 0.15f;
+    if (wearCount > 0)
+    {
+        avgWear = totalWear / wearCount;
+        if (avgWear < 0.0f) avgWear = 0.0f;
+        if (avgWear > 1.0f) avgWear = 1.0f;
+    }
+
+    uint32_t outputRarity = inputRarity + 1;
+    if (outputRarity > ItemSchema::RarityAncient)
+    {
+        Platform::Print("Cannot trade up items of rarity %u (max output is ancient)\n", inputRarity);
+        return false;
+    }
+
+    std::vector<std::string> weightedCollections;
+    for (const auto &pair : collectionCounts)
+    {
+        const std::string &collection = pair.first;
+        std::vector<const LootListItem *> candidates;
+        if (!m_itemSchema.GetTradeUpCandidates(collection, outputRarity, candidates))
+        {
+            continue;
+        }
+
+        int count = pair.second;
+        for (int i = 0; i < count; i++)
+        {
+            weightedCollections.push_back(collection);
+        }
+
+        float percentage = (float)count / 10.0f * 100.0f;
+        Platform::Print("%s Collection: %.1f%%\n", GetCollectionName(m_itemSchema, collection).c_str(), percentage);
+    }
+
+    if (weightedCollections.empty())
+    {
+        Platform::Print("No valid trade-up collections with rarity %u\n", outputRarity);
+        return false;
+    }
+
+    uint32_t roll = m_random.Integer<uint32_t>(0, 9);
+    const std::string &selectedCollection = weightedCollections[roll];
+    Platform::Print("RNG roll: %u, selected collection %s (%s)\n", roll, selectedCollection.c_str(),
+        GetCollectionName(m_itemSchema, selectedCollection).c_str());
+
+    std::vector<const LootListItem *> outputCandidates;
+    if (!m_itemSchema.GetTradeUpCandidates(selectedCollection, outputRarity, outputCandidates))
+    {
+        Platform::Print("No trade-up candidates for collection %s at rarity %u\n",
+            selectedCollection.c_str(), outputRarity);
+        return false;
+    }
+
+    std::vector<const LootListItem *> validCandidates;
+    validCandidates.reserve(outputCandidates.size());
+
+    for (const LootListItem *candidate : outputCandidates)
+    {
+        if (!candidate || !candidate->paintKitInfo)
+        {
+            continue;
+        }
+
+        float minWear = candidate->paintKitInfo->m_minFloat;
+        float maxWear = candidate->paintKitInfo->m_maxFloat;
+        float mappedWear = minWear + avgWear * (maxWear - minWear);
+
+        if (mappedWear < minWear || mappedWear > maxWear)
+        {
+            continue;
+        }
+
+        validCandidates.push_back(candidate);
+    }
+
+    if (validCandidates.empty())
+    {
+        Platform::Print("No valid trade-up candidates after float filtering for collection %s\n",
+            selectedCollection.c_str());
+        return false;
+    }
+
+    uint32_t candidateIndex = m_random.Integer<uint32_t>(0, static_cast<uint32_t>(validCandidates.size() - 1));
+    const LootListItem *selectedCandidate = validCandidates[candidateIndex];
+
+    CSOEconItem &outputItem = AllocateItem(0);
+
+    outputItem.set_def_index(selectedCandidate->itemInfo->m_defIndex);
+    outputItem.set_inventory(InventoryUnacknowledged(UnacknowledgedRecycling));
+    outputItem.set_quantity(1);
+    outputItem.set_level(1);
+    outputItem.set_origin(ItemOriginCrate);
+    outputItem.set_rarity(outputRarity);
+    outputItem.set_quality(hasStatTrak ? ItemSchema::QualityStrange : ItemSchema::QualityUnique);
+    outputItem.set_flags(0);
+    outputItem.set_in_use(false);
+
+    uint32_t paintKitId = selectedCandidate->paintKitInfo->m_defIndex;
+
+    CSOEconItemAttribute *paintAttr = outputItem.add_attribute();
+    paintAttr->set_def_index(ItemSchema::AttributeTexturePrefab);
+    m_itemSchema.SetAttributeUint32(paintAttr, paintKitId);
+
+    CSOEconItemAttribute *seedAttr = outputItem.add_attribute();
+    seedAttr->set_def_index(ItemSchema::AttributeTextureSeed);
+    m_itemSchema.SetAttributeUint32(seedAttr, m_random.Integer<uint32_t>(0, 1000));
+
+    float outputWear = avgWear;
+    if (selectedCandidate->paintKitInfo)
+    {
+        float minWear = selectedCandidate->paintKitInfo->m_minFloat;
+        float maxWear = selectedCandidate->paintKitInfo->m_maxFloat;
+        outputWear = minWear + avgWear * (maxWear - minWear);
+    }
+    CSOEconItemAttribute *wearAttr = outputItem.add_attribute();
+    wearAttr->set_def_index(ItemSchema::AttributeTextureWear);
+    m_itemSchema.SetAttributeFloat(wearAttr, outputWear);
+
+    if (hasStatTrak)
+    {
+        CSOEconItemAttribute *killAttr = outputItem.add_attribute();
+        killAttr->set_def_index(ItemSchema::AttributeKillEater);
+        m_itemSchema.SetAttributeUint32(killAttr, 0);
+
+        CSOEconItemAttribute *scoreTypeAttr = outputItem.add_attribute();
+        scoreTypeAttr->set_def_index(ItemSchema::AttributeKillEaterScoreType);
+        m_itemSchema.SetAttributeUint32(scoreTypeAttr, 0);
+    }
+
+    destroyItems.reserve(inputItems.size());
+    for (auto it : inputItems)
+    {
+        CMsgSOSingleObject &destroy = destroyItems.emplace_back();
+        DestroyItem(it, destroy);
+    }
+
+    ToSingleObject(newItem, outputItem);
+
+    notification.add_item_id(outputItem.id());
+    notification.set_request(k_EGCItemCustomizationNotification_UnlockCrate);
+
+    if (outCraftedItem)
+    {
+        *outCraftedItem = &outputItem;
+    }
+
+    if (outCraftedItem)
+    {
+        *outCraftedItem = &outputItem;
+    }
+
+    Platform::Print("Trade-up complete: created item %llu from collection %s (%s), def %u, rarity %u, wear %.4f, stattrak=%d\n",
+        outputItem.id(), selectedCollection.c_str(), GetCollectionName(m_itemSchema, selectedCollection).c_str(),
+        outputItem.def_index(), selectedCandidate->rarity, outputWear, hasStatTrak ? 1 : 0);
+
+    return true;
 }
